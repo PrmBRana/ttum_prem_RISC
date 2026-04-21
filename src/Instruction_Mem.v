@@ -8,7 +8,7 @@
 // ============================================================
 
 module mem1KB_32bit #(
-    parameter DEPTH  = 64,                       // number of 32-bit words
+    parameter DEPTH  = 50,                       // number of 32-bit words
     parameter ADDR_W = $clog2(DEPTH)            // width of address bus
 )(
     input  wire              clk,               // clock for write
@@ -52,6 +52,7 @@ module mem1KB_32bit #(
     assign Instruction_out = mem[word_idx];
 
 endmodule
+
 
 
 

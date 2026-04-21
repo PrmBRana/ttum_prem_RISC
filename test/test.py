@@ -87,90 +87,6 @@ async def test_uart_bootloader(dut):
   else:
       dut._log.error(f"Handshake Failed! Expected 0x55, got 0x{val:02X}")
 
-# ============================================================
-# UART BOOTLOADER TEST
-# ============================================================
-# --- UART Peripheral Echo Test ---
-# --- Helper: Format byte as ASCII ---
-def byte_to_ascii(val):
-   return chr(val) if 31 < val < 127 else '?'
-
-
-
-
-# --- Helper: Robust Receiver with Idle Detection ---
-async def collect_uart_data(uart_sink, log, timeout_ms=10):
-   """
-   Continually reads from UART until a period of silence (timeout) occurs.
-   Returns a list of received bytes.
-   """
-   received = []
-   log.info("Receiver started - waiting for data...")
-
-
-   while True:
-       try:
-           byte_list = await with_timeout(uart_sink.read(count=1), timeout_ms, 'ms')
-           val = byte_list[0]
-
-
-           # Filter leading 0x00 (startup noise) if buffer is still empty
-           if val == 0 and len(received) == 0:
-               continue
-
-
-           received.append(val)
-           log.info(f"UART_tx Received: 0x{val:02X} ('{byte_to_ascii(val)}')")
-
-
-       except cocotb.result.SimTimeoutError:
-           log.info(f"Receiver timed out after {timeout_ms}ms of silence. Stopping.")
-           break
-
-
-   ascii_str = ''.join(byte_to_ascii(b) for b in received)
-   log.info(f"Full ASCII output: '{ascii_str}'")
-   return received
-
-# ============================================================
-# UART ECHO TEST
-# ============================================================
-async def UART_peripherals_test(dut):
-   uart_source = UartSource(dut.UART_rx_line, baud=115200)
-   uart_sink   = UartSink(dut.UART_tx, baud=115200)
-
-
-   data_to_send = [ord(c) for c in "RISC-V is an open-source instruction set architecture (ISA) used for the development of custom processors targeting a variety of end applications. Originally developed at the University of California, Berkeley."]
-
-
-   # Send each byte with realistic UART timing (~1 byte per 100 µs at 115200 baud)
-   dut._log.info(f"Sending {len(data_to_send)} bytes: '{''.join(chr(b) for b in data_to_send)}'")
-   for byte in data_to_send:
-       await uart_source.write([byte])
-       dut._log.info(f"Sent to DUT: 0x{byte:02X} ('{chr(byte)}')")
-       await Timer(100, units='us')  # spacing to avoid overruns (Issue in 100us, overlap)
-
-
-   # Collect all echoed bytes until idle
-   received = await collect_uart_data(uart_sink, dut._log, timeout_ms=100)
-
-
-   # Decode received ASCII safely
-   received_str = "".join(chr(b) for b in received if 31 < b < 127)
-   dut._log.info(f"Full received string: '{received_str}'")
-
-
-   # Verification
-   sent_str = "".join(chr(b) for b in data_to_send)
-   if sent_str != received_str:
-       dut._log.error("✗ MISMATCH: Sent and received strings differ!")
-       for i, b in enumerate(data_to_send):
-           rec = received[i] if i < len(received) else None
-           dut._log.error(f"Byte[{i}]: sent 0x{b:02X} ('{chr(b)}') vs received {rec} ('{chr(rec) if rec else '?'}')")
-       assert False, "UART echo failed!"
-   else:
-       dut._log.info("✓ UART echo test passed successfully!")
-
 
 # ============================================================
 # SPI SLAVE (Mode-0 Correct)
@@ -182,7 +98,7 @@ async def spi_slave_full_duplex(dut, slave_tx_data):
     mosi = dut.spi2_mosi
     miso = dut.spi2_miso
     cs   = dut.spi2_cs_n
-    uart_sink   = UartSink(dut.UART_tx, baud=115200)
+    uart_sink   = UartSink(dut.tx, baud=115200)
 
     received = []
     idx = 0
@@ -217,9 +133,9 @@ async def spi_slave_full_duplex(dut, slave_tx_data):
         received.append(rx_byte)
 
         dut._log.info(
-            f"[{idx}] MOSI=0x{rx_byte:02X} ('{byte_to_ascii(rx_byte)}') "
-        f"| MISO=0x{tx_byte:02X} ('{byte_to_ascii(tx_byte)}') "
-        f"| UART_tx=0x{tx_byte:02X} ('{byte_to_ascii(tx_byte)}')"
+            f"[{idx}] (SPI) MOSI=0x{rx_byte:02X} ('{byte_to_ascii(rx_byte)}') "
+        f"| (SPI) MISO=0x{tx_byte:02X} ('{byte_to_ascii(tx_byte)}') "
+        f"| Shared UART tx=0x{tx_byte:02X} ('{byte_to_ascii(tx_byte)}')"
         )
 
         idx += 1
@@ -263,7 +179,7 @@ async def uart_spi_test(dut):
     cocotb.start_soon(spi_debug_monitor(dut))
 
     # SPI response
-    slave_tx = [ord(c) for c in "My Name is Prem Rana. Iam from Nepal. I am a student of computer engineering. I am interested in embedded system design and RISC-V architecture. I am currently working on a project to design and implement a RISC-V processor using Verilog HDL. I am also learning about FPGA development and hardware-software co-design. I am passionate about learning new technologies and improving my skills in the field of computer engineering."]
+    slave_tx = [ord(c) for c in "My Name is Prem Rana. I am a student of Electronics and Communication Engineering."]
 
     # ✅ START SLAVE FIRST (CRITICAL FIX)
     slave_task = cocotb.start_soon(

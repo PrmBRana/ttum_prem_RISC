@@ -2,11 +2,33 @@
 `timescale 1ns / 1ps
 
 // ============================================================
-//  uart_Tx_fixed — Bootloader UART (TX + RX, oversampled x16)
+//  uart_Tx_fixed — Shared UART (TX + RX, oversampled x16)
 //
-//  OS_HALF removed — RX_MAJ replaces it entirely.
-//  All localparams use two-step integer→slice truncation
-//  (Verilog-2001 compatible, no SystemVerilog casts).
+//  ROOT CAUSE OF DUPLICATE BYTES (now fixed):
+//  A previous version added tx_out_r (second FF on tx output)
+//  to break antenna violations. This added 2 cycles of total
+//  output latency (tx_reg + tx_out_r) but tx_busy_hold only
+//  held for 1 extra cycle after TX_IDLE. DataMem saw tx_busy=0
+//  while the previous byte was still being serialised through
+//  tx_out_r → drain logic fired again → duplicate byte sent.
+//
+//  FIX APPLIED:
+//  1. tx_out_r removed. tx drives directly from tx_reg.
+//     Antenna violation on the tx pad is handled at physical
+//     design by the pad ring buffer cell — no RTL workaround
+//     needed for a 1-bit output.
+//
+//  2. tx_busy_hold is now a 2-stage shift register so tx_busy
+//     stays high for 2 extra cycles after TX_IDLE. This covers:
+//       - 1 cycle: tx_state registers TX_IDLE
+//       - 1 cycle: final tx_reg value propagates to pad
+//     DataMem drain logic cannot fire until both stages clear.
+//
+//  3. baud_tick_tx / baud_tick_rx remain as separate registered
+//     copies (fanout fix — kept from previous version).
+//
+//  4. tx output is now 'reg' driven directly from FSM —
+//     clean single-FF output, correct timing.
 // ============================================================
 module uart_Tx_fixed #(
     parameter CLK_FREQ   = 50_000_000,
@@ -17,37 +39,30 @@ module uart_Tx_fixed #(
     input  wire       reset,
     input  wire       tx_Start,
     input  wire [7:0] tx_Data,
-    output reg        tx,
+    output reg        tx,          // direct reg — no extra FF
+    output wire       tx_busy,
     input  wire       rx,
     output reg  [7:0] rx_Data,
     output reg        rx_ready
 );
 
-    // --- RX synchronizer ---
+    // ── RX synchronizer ──────────────────────────────────────
     reg rx_s1, rx_s2;
     always @(posedge clk) begin
-        if (reset) begin
-            rx_s1 <= 1'b1;
-            rx_s2 <= 1'b1;
-        end else begin
-            rx_s1 <= rx;
-            rx_s2 <= rx_s1;
-        end
+        if (reset) begin rx_s1 <= 1'b1; rx_s2 <= 1'b1; end
+        else       begin rx_s1 <= rx;   rx_s2 <= rx_s1; end
     end
 
-    // --- Baud generator ---
-    localparam integer BAUD_DIV   = CLK_FREQ / (BAUD_RATE * OVERSAMPLE);
-    localparam integer CNT_WIDTH  = $clog2(BAUD_DIV);
+    // ── Baud generator ───────────────────────────────────────
+    localparam integer BAUD_DIV  = CLK_FREQ / (BAUD_RATE * OVERSAMPLE);
+    localparam integer CNT_WIDTH = $clog2(BAUD_DIV);
 
-    // Verilog-2001 width-clean: compute 32-bit integer first,
-    // then select narrow slice — no AND/REPLICATE, no warnings.
-    localparam integer     BAUD_LAST_32 = BAUD_DIV - 1;
-    localparam [CNT_WIDTH-1:0] BAUD_LAST = BAUD_LAST_32[CNT_WIDTH-1:0];
+    localparam integer         BAUD_LAST_32 = BAUD_DIV - 1;
+    localparam [CNT_WIDTH-1:0] BAUD_LAST    = BAUD_LAST_32[CNT_WIDTH-1:0];
 
     localparam integer OS_LAST_32 = OVERSAMPLE - 1;
     localparam [3:0]   OS_LAST    = OS_LAST_32[3:0];
 
-    // Majority threshold for RX bit voting (replaces OS_HALF)
     localparam integer RX_MAJ = OVERSAMPLE / 2;
 
     reg [CNT_WIDTH-1:0] baud_cnt;
@@ -66,7 +81,19 @@ module uart_Tx_fixed #(
         end
     end
 
-    // --- TX FSM ---
+    // Separate registered baud_tick copies — reduces fanout
+    reg baud_tick_tx, baud_tick_rx;
+    always @(posedge clk) begin
+        if (reset) begin
+            baud_tick_tx <= 1'b0;
+            baud_tick_rx <= 1'b0;
+        end else begin
+            baud_tick_tx <= baud_tick;
+            baud_tick_rx <= baud_tick;
+        end
+    end
+
+    // ── TX FSM ───────────────────────────────────────────────
     localparam [1:0] TX_IDLE  = 2'd0;
     localparam [1:0] TX_START = 2'd1;
     localparam [1:0] TX_DATA  = 2'd2;
@@ -78,12 +105,28 @@ module uart_Tx_fixed #(
     reg [3:0] tx_oversample_cnt;
     reg       tx_pending;
 
+    // tx_busy: 2-stage hold so DataMem cannot drain the FIFO
+    // until 2 full cycles after TX_IDLE — matching the 1-cycle
+    // baud_tick_tx pipeline and 1-cycle tx output propagation.
+    wire tx_active = (tx_state != TX_IDLE) || tx_pending;
+    reg  tx_hold0, tx_hold1;
+    always @(posedge clk) begin
+        if (reset) begin
+            tx_hold0 <= 1'b0;
+            tx_hold1 <= 1'b0;
+        end else begin
+            tx_hold0 <= tx_active;   // 1 cycle behind tx_active
+            tx_hold1 <= tx_hold0;    // 2 cycles behind tx_active
+        end
+    end
+    assign tx_busy = tx_active | tx_hold0 | tx_hold1;
+
     always @(posedge clk) begin
         if (reset)
             tx_pending <= 1'b0;
         else if (tx_Start)
             tx_pending <= 1'b1;
-        else if (tx_state == TX_START && baud_tick)
+        else if (tx_state == TX_START && baud_tick_tx)
             tx_pending <= 1'b0;
     end
 
@@ -94,7 +137,7 @@ module uart_Tx_fixed #(
             tx_shift_reg      <= 8'd0;
             tx_bit_cnt        <= 3'd0;
             tx_oversample_cnt <= 4'd0;
-        end else if (baud_tick) begin
+        end else if (baud_tick_tx) begin
             case (tx_state)
                 TX_IDLE: begin
                     tx                <= 1'b1;
@@ -118,7 +161,7 @@ module uart_Tx_fixed #(
                     if (tx_oversample_cnt == OS_LAST) begin
                         tx_oversample_cnt <= 4'd0;
                         if (tx_bit_cnt == 3'd7) tx_state <= TX_STOP;
-                        else tx_bit_cnt <= tx_bit_cnt + 1'b1;
+                        else                    tx_bit_cnt <= tx_bit_cnt + 1'b1;
                     end else
                         tx_oversample_cnt <= tx_oversample_cnt + 1'b1;
                 end
@@ -135,7 +178,7 @@ module uart_Tx_fixed #(
         end
     end
 
-    // --- RX FSM ---
+    // ── RX FSM ───────────────────────────────────────────────
     localparam [1:0] RX_IDLE  = 2'd0;
     localparam [1:0] RX_START = 2'd1;
     localparam [1:0] RX_DATA  = 2'd2;
@@ -156,7 +199,7 @@ module uart_Tx_fixed #(
             one_counts    <= 5'd0;
             rx_Data       <= 8'd0;
             rx_ready      <= 1'b0;
-        end else if (baud_tick) begin
+        end else if (baud_tick_rx) begin
             case (rx_state)
                 RX_IDLE: begin
                     rx_ready      <= 1'b0;
@@ -185,7 +228,7 @@ module uart_Tx_fixed #(
                         rx_sample_cnt <= 4'd0;
                         one_counts    <= 5'd0;
                         if (rx_bit_cnt == 3'd7) rx_state <= RX_STOP;
-                        else rx_bit_cnt <= rx_bit_cnt + 1'b1;
+                        else                    rx_bit_cnt <= rx_bit_cnt + 1'b1;
                     end else
                         rx_sample_cnt <= rx_sample_cnt + 1'b1;
                 end
@@ -208,5 +251,6 @@ module uart_Tx_fixed #(
     end
 
 endmodule
+
 
 

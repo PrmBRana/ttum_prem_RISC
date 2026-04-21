@@ -18,16 +18,10 @@ module tt_um_prem_pipeline_test (
     wire reset = ~rst_n;
 
     // --------------------------------------------------
-    // Inputs (UART RX)
+    // UART (ONLY ONE)
     // --------------------------------------------------
-    wire uart1_rx = ui_in[3];
-    wire uart2_rx = ui_in[4];
-
-    // --------------------------------------------------
-    // Outputs (UART TX)
-    // --------------------------------------------------
-    wire uart1_tx;
-    wire uart2_tx;
+    wire uart_rx = ui_in[3];
+    wire uart_tx;
 
     // --------------------------------------------------
     // SPI signals
@@ -38,35 +32,36 @@ module tt_um_prem_pipeline_test (
     wire spi2_miso = uio_in[7];
 
     // --------------------------------------------------
-    // Unused signals
+    // Unused signals (cleaned)
     // --------------------------------------------------
-    wire _unused = &{ui_in[7:5], ui_in[2:0], uio_in[6:0], ena};
+    wire _unused = &{ui_in[7:4], ui_in[2:0], uio_in[6:0], ena};
 
     // --------------------------------------------------
-    // UART output mapping
+    // Outputs (only UART1 now)
     // --------------------------------------------------
     assign uo_out = {
-        6'b000000,
-        uart2_tx,
-        uart1_tx
+        7'b0000000,
+        uart_tx
     };
 
     // --------------------------------------------------
-    // SERIAL UIO mapping (UART + SPI share 0–4)
+    // UIO mapping
+    // [0] UART TX
+    // [2] MOSI
+    // [3] SCLK
+    // [4] CS
     // --------------------------------------------------
     assign uio_out = {
         3'b000,
         spi2_cs_n,   // [4]
         spi2_sclk,   // [3]
         spi2_mosi,   // [2]
-        uart2_tx,    // [1]
-        uart1_tx     // [0]
+        1'b0,        // [1] unused
+        uart_tx      // [0]
     };
 
-    // --------------------------------------------------
-    // Enable only used pins 0–4
-    // --------------------------------------------------
-    assign uio_oe = 8'b00011111;
+    // enable only used pins: 0,2,3,4
+    assign uio_oe = 8'b00011101;
 
     // --------------------------------------------------
     // Pipeline core
@@ -75,11 +70,8 @@ module tt_um_prem_pipeline_test (
         .clk(clk),
         .reset(reset),
 
-        .rx(uart1_rx),
-        .tx(uart1_tx),
-
-        .UART_tx(uart2_tx),
-        .UART_rx_line(uart2_rx),
+        .rx(uart_rx),
+        .tx(uart_tx),
 
         .spi2_cs_n(spi2_cs_n),
         .spi2_sclk(spi2_sclk),
@@ -88,3 +80,4 @@ module tt_um_prem_pipeline_test (
     );
 
 endmodule
+

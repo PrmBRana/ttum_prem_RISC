@@ -16,17 +16,15 @@ module tb();
     reg ena;
 
     // --------------------------------------------------
-    // UART
+    // UART (ONLY ONE)
     // --------------------------------------------------
-    reg rx;
-    reg UART_rx_line;
+    reg  rx;
     wire tx;
-    wire UART_tx;
 
     // --------------------------------------------------
     // SPI
     // --------------------------------------------------
-    reg spi2_miso;
+    reg  spi2_miso;
     wire spi2_mosi;
     wire spi2_sclk;
     wire spi2_cs_n;
@@ -41,16 +39,15 @@ module tb();
     reg  [7:0] uio_in;
 
     // --------------------------------------------------
-    // ui_in mapping
+    // ui_in mapping (ONLY RX used)
     // --------------------------------------------------
     always @(*) begin
         ui_in = 8'b0;
-        ui_in[3] = rx;
-        ui_in[4] = UART_rx_line;
+        ui_in[3] = rx;   // UART RX
     end
 
     // --------------------------------------------------
-    // uio_in mapping (only SPI MISO on bit7)
+    // uio_in mapping (SPI MISO only)
     // --------------------------------------------------
     always @(*) begin
         uio_in = 8'b0;
@@ -60,32 +57,30 @@ module tb();
     // --------------------------------------------------
     // Output mapping
     // --------------------------------------------------
-    assign tx       = uo_out[0];
-    assign UART_tx  = uo_out[1];
+    assign tx = uo_out[0];   // UART TX
 
     assign spi2_mosi = uio_out[2];
     assign spi2_sclk = uio_out[3];
     assign spi2_cs_n = uio_out[4];
 
     // --------------------------------------------------
-    // Clock 50 MHz
+    // Clock (50 MHz)
     // --------------------------------------------------
     always #10 clk = ~clk;
 
     // --------------------------------------------------
-    // Initial values + RESET FIX
+    // Initial
     // --------------------------------------------------
     initial begin
         clk = 0;
         rst_n = 0;
         ena = 1;
 
-        rx = 1'b1;
-        UART_rx_line = 1'b1;
+        rx = 1'b1;          // UART idle (IMPORTANT)
         spi2_miso = 1'b1;
 
         #100;
-        rst_n = 1;   // RELEASE RESET (IMPORTANT)
+        rst_n = 1;
     end
 
 `ifdef GL_TEST
@@ -112,5 +107,6 @@ module tb();
     );
 
 endmodule
+
 
 
