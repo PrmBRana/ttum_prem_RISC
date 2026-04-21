@@ -37,7 +37,6 @@ project:
     - "WriteBack_stage.v"
     - "uart.v"
     - "uart_bootloader.v"
-    - "uart0.v"
     - "spi.v"
     - "gpio.v"
     - "fifo.v"
