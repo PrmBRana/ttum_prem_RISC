@@ -42,33 +42,33 @@ async def test_uart_bootloader(dut):
   if val == 0x55:
       dut._log.info("✓ SUCCESS: Handshake ACK received")
       instructions = [
-           0x40000537,
-           0x30000937,
-           0x100009b7,
-           0x00850593,
-           0x00450613,
-           0x00c50693,
-           0x00898a93,
-           0x00490713,
-           0x00100193,
-           0x00000813,
-           0x03200293,
-           0x00300b13,
-           0x01072023,
-           0x0aa00393,
-           0x02028663,
-           0x00752023,
-           0x0006a403,
-           0xfe040ee3,
-           0x0005a483,
-           0x000aa303,
-           0x01637333,
-           0xfe031ce3,
-           0x0099a023,
-           0xfff28293,
-           0xfd9ff06f,
-           0x00372023,
-           0x00000073,
+            0x40000537,
+            0x30000937,
+            0x100009b7,
+            0x00850593,
+            0x00450613,
+            0x00c50693,
+            0x00898a93,
+            0x00490713,
+            0x00100193,
+            0x00000813,
+            0x0c800293,
+            0x00300b13,
+            0x01072023,
+            0x0aa00393,
+            0x02028663,
+            0x00752023,
+            0x0006a403,
+            0xfe040ee3,
+            0x0005a483,
+            0x000aa303,
+            0x01637333,
+            0xfe031ce3,
+            0x0099a023,
+            0xfff28293,
+            0xfd9ff06f,
+            0x00372023,
+            0x00000073
       ]
       dut._log.info("Uploading instructions to processor...")
       for idx, inst in enumerate(instructions):
@@ -179,7 +179,10 @@ async def uart_spi_test(dut):
     cocotb.start_soon(spi_debug_monitor(dut))
 
     # SPI response
-    slave_tx = [ord(c) for c in "My Name is Prem Rana. I am a student of Electronics and Communication Engineering."]
+    # Use triple quotes to handle internal quotes like "Munal"
+    text_data = """Antarikchya Pratisthan Nepal (APN) is a pioneering non-profit organization dedicated to establishing a sustainable space ecosystem within Nepal, driven by the belief that space technology is essential for national development. Established with a vision to transform Nepal from a passive consumer of space services into an active contributor to the global space sector, APN focuses on three core pillars: research and development, capacity building, and community outreach. At the heart of their mission is the development of indigenous satellite technology. One of their flagship projects is "Munal," a 1U CubeSat built by high school students, which serves as a powerful symbol of youth empowerment and technical capability. By involving students in the entire lifecycle of a satellite mission—from design and fabrication to testing—APN is fostering a new generation of aerospace engineers and scientists in a country that historically lacked a formal space program."""
+    
+    slave_tx = [ord(c) for c in text_data]
 
     # ✅ START SLAVE FIRST (CRITICAL FIX)
     slave_task = cocotb.start_soon(
@@ -194,7 +197,7 @@ async def uart_spi_test(dut):
 
       # Wait for SPI
     try:
-        result = await with_timeout(slave_task, 5, 'ms')
+        result = await with_timeout(slave_task, 20, 'ms')
     except Exception:                    # catch anything — version safe
         dut._log.warning("SPI timed out — partial result")
         result = []

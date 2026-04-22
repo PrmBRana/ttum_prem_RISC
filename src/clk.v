@@ -8,11 +8,16 @@ module pc_register (
     input  wire        stallF,
     output reg  [31:0] PCF_out
 );
-    always @(posedge clk or posedge reset) begin
-        if (reset)       PCF_out <= 32'd0;
-        else if (!stallF) PCF_out <= PCF_in;
+
+    always @(posedge clk) begin
+        if (reset)
+            PCF_out <= 32'd0;
+        else if (!stallF)
+            PCF_out <= PCF_in;
     end
+
 endmodule
+
 
 
 

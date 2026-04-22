@@ -3,32 +3,6 @@
 
 // ============================================================
 //  uart_Tx_fixed — Shared UART (TX + RX, oversampled x16)
-//
-//  ROOT CAUSE OF DUPLICATE BYTES (now fixed):
-//  A previous version added tx_out_r (second FF on tx output)
-//  to break antenna violations. This added 2 cycles of total
-//  output latency (tx_reg + tx_out_r) but tx_busy_hold only
-//  held for 1 extra cycle after TX_IDLE. DataMem saw tx_busy=0
-//  while the previous byte was still being serialised through
-//  tx_out_r → drain logic fired again → duplicate byte sent.
-//
-//  FIX APPLIED:
-//  1. tx_out_r removed. tx drives directly from tx_reg.
-//     Antenna violation on the tx pad is handled at physical
-//     design by the pad ring buffer cell — no RTL workaround
-//     needed for a 1-bit output.
-//
-//  2. tx_busy_hold is now a 2-stage shift register so tx_busy
-//     stays high for 2 extra cycles after TX_IDLE. This covers:
-//       - 1 cycle: tx_state registers TX_IDLE
-//       - 1 cycle: final tx_reg value propagates to pad
-//     DataMem drain logic cannot fire until both stages clear.
-//
-//  3. baud_tick_tx / baud_tick_rx remain as separate registered
-//     copies (fanout fix — kept from previous version).
-//
-//  4. tx output is now 'reg' driven directly from FSM —
-//     clean single-FF output, correct timing.
 // ============================================================
 module uart_Tx_fixed #(
     parameter CLK_FREQ   = 50_000_000,

@@ -3,46 +3,6 @@
 
 // ============================================================
 //  DataMem — Memory-mapped peripheral bus (TX-only UART)
-//
-//  ADDRESS MAP
-//  ─────────────────────────────────────────────────────────
-//  UART  0x10000000  TX write (sw)          [write-only]
-//        0x10000008  TX status (lw) {30b0, tx_busy, tx_full}
-//
-//  SPI2  0x40000000  TX write (sw) / TX buf (lw)
-//        0x40000004  TX status (lw) {30b0, pending, busy}
-//        0x40000008  RX read  (lw)
-//        0x4000000C  RX status (lw) {30b0, full, not_empty}
-//
-//  GPIO2 0x30000004  CS write-only
-//
-//  FROM WAVEFORM (root cause of 0x00 first byte):
-//  uart_out_data=00 before 4D ('M'). The FIFO drain fired
-//  prematurely or captured a stale value. Root cause:
-//  uart_tx_rd_level did not include !uart_tx_start guard in
-//  some versions, allowing the drain edge-detector to fire
-//  twice: once when tx_busy falls, and again 1 cycle later
-//  when tx_busy_hold clears. The !uart_tx_start guard breaks
-//  the second firing because uart_tx_start=1 for exactly the
-//  cycle after a drain, blocking uart_tx_rd_level from re-rising.
-//
-//  FIXES:
-//  1. Async reset throughout (@posedge clk or posedge reset).
-//  2. uart_tx_rd_level includes !uart_tx_start guard.
-//  3. FIFO write (uart_tx_wr) strictly guarded:
-//     only fires when memwriteM_in=1, sel_uart_tx=1,
-//     not locked, not full. No extra conditions needed.
-//  4. UART TX only (no RX FIFO) — matches doc 19/20 intent.
-//     The core uses UART only to SEND data (logs, SPI results).
-//     Receiving is done via SPI2 with external RAM.
-//
-//  ASIC NOTE:
-//  aluAddress_in comparators are COMBINATIONAL — never register
-//  them. Pipeline MEM stage already has one FF on address.
-//  Adding another creates double-registration (address arrives
-//  1 cycle late → wrong sel_* fires → DEADBADD returned).
-//  Antenna violations on aluAddress_in bus: use router diode
-//  insertion in OpenLane config.json, not RTL.
 // ============================================================
 module DataMem #(
     parameter integer UART_FIFO_DEPTH = 4,
@@ -91,7 +51,7 @@ module DataMem #(
     // Write-lock: prevents double-write from pipeline stalls
     // (memwriteM_in stays high while pipeline is stalled on lw/sw)
     reg uart_tx_wr_lock;
-    always @(posedge clk or posedge reset) begin
+    always @(posedge clk) begin
         if (reset)                                                  uart_tx_wr_lock <= 1'b0;
         else if (!sel_uart_tx)                                      uart_tx_wr_lock <= 1'b0;
         else if (memwriteM_in && sel_uart_tx && !uart_tx_wr_lock)   uart_tx_wr_lock <= 1'b1;
@@ -108,7 +68,7 @@ module DataMem #(
     //   Pulse = rising edge of level → exactly 1-cycle pop.
     wire uart_tx_rd_level = !uart_tx_busy && !uart_tx_empty && !uart_tx_start;
     reg  uart_tx_rd_prev;
-    always @(posedge clk or posedge reset) begin
+    always @(posedge clk) begin
         if (reset) uart_tx_rd_prev <= 1'b0;
         else       uart_tx_rd_prev <= uart_tx_rd_level;
     end
@@ -129,7 +89,7 @@ module DataMem #(
     // rd_data is combinational (async FIFO read) — valid at
     // posedge when uart_tx_rd is sampled. Non-blocking assignment
     // captures the pre-posedge value correctly.
-    always @(posedge clk or posedge reset) begin
+    always @(posedge clk) begin
         if (reset) begin
             uart_out_data <= 8'd0;
             uart_tx_start <= 1'b0;
@@ -149,7 +109,7 @@ module DataMem #(
     reg [7:0]  spi2_tx_buf;
     reg        spi2_tx_wr_lock;
 
-    always @(posedge clk or posedge reset) begin
+    always @(posedge clk) begin
         if (reset)                                                    spi2_tx_wr_lock <= 1'b0;
         else if (!sel_spi2_tx)                                        spi2_tx_wr_lock <= 1'b0;
         else if (memwriteM_in && sel_spi2_tx && !spi2_tx_wr_lock)     spi2_tx_wr_lock <= 1'b1;
@@ -157,7 +117,7 @@ module DataMem #(
     wire spi2_tx_wr = memwriteM_in && sel_spi2_tx && !spi2_tx_wr_lock;
     assign spi2_pending_out = spi2_pending;
 
-    always @(posedge clk or posedge reset) begin
+    always @(posedge clk) begin
         if (reset) begin
             spi2_start   <= 1'b0;
             spi2_tx_data <= 8'd0;
@@ -182,7 +142,7 @@ module DataMem #(
     // SPI2 RX FIFO
     // =========================================================
     reg spi2_done_r;
-    always @(posedge clk or posedge reset) begin
+    always @(posedge clk) begin
         if (reset) spi2_done_r <= 1'b0;
         else       spi2_done_r <= spi2_done;
     end
@@ -192,7 +152,7 @@ module DataMem #(
     wire [7:0] spi2_rx_rd_data;
     reg        spi2_rx_rd_lock;
 
-    always @(posedge clk or posedge reset) begin
+    always @(posedge clk) begin
         if (reset)                                                    spi2_rx_rd_lock <= 1'b0;
         else if (!sel_spi2_rx)                                        spi2_rx_rd_lock <= 1'b0;
         else if (!memwriteM_in && sel_spi2_rx && !spi2_rx_rd_lock)    spi2_rx_rd_lock <= 1'b1;
@@ -213,7 +173,7 @@ module DataMem #(
     // =========================================================
     // GPIO2
     // =========================================================
-    always @(posedge clk or posedge reset) begin
+    always @(posedge clk) begin
         if (reset) begin
             gpio2_wr_en <= 1'b0;
             gpio2_wdata <= 1'b1;    // CS_N idle high

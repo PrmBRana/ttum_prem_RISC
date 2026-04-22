@@ -3,16 +3,6 @@
 
 // ============================================================
 //  Reg_file — 32×32 register file
-//
-//  No reset port: x0..x31 start as 0 via Verilog initial values
-//  in simulation (reg default = 0). RISC-V programs are responsible
-//  for initialising any register they use before reading it.
-//  Removing reset avoids a 32×32 reset fanout which is expensive
-//  on ASIC and unnecessary for correctness.
-//
-//  Write-first forwarding: if WB is writing the same register
-//  being read in ID this cycle, the new value is forwarded
-//  combinatorially, avoiding a 1-cycle stale-read hazard.
 // ============================================================
 
 module Reg_file (

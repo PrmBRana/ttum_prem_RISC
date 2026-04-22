@@ -4,6 +4,7 @@
 module MEM_stage (
     input  wire        clk,
     input  wire        reset,
+
     input  wire [31:0] ALUResult_in,
     input  wire [31:0] WriteData_in,
     input  wire [4:0]  RdM_in,
@@ -11,6 +12,7 @@ module MEM_stage (
     input  wire        RegWriteM_in,
     input  wire [1:0]  ResultSrcM_in,
     input  wire        MemWriteM_in,
+
     output reg  [31:0] ALUResult_out,
     output reg  [31:0] WriteData_out,
     output reg  [4:0]  RdM_out,
@@ -19,6 +21,7 @@ module MEM_stage (
     output reg  [1:0]  ResultSrcM_out,
     output reg         MemWriteM_out
 );
+
     always @(posedge clk) begin
         if (reset) begin
             ALUResult_out  <= 32'b0;
@@ -38,6 +41,9 @@ module MEM_stage (
             MemWriteM_out  <= MemWriteM_in;
         end
     end
+
 endmodule
+
+
 
 

@@ -3,10 +3,6 @@
 
 // =============================================================================
 // EX_stage.v — ID/EX pipeline latch
-//
-// Added: ALUSrcA_in [1:0] / ALUSrcA_out [1:0]
-//   Passes the new Control.ALUSrcA signal through the latch so pipeline.v
-//   can select SrcA correctly for LUI (force 0) and AUIPC (force PC_E).
 // =============================================================================
 
 module EX_stage (
@@ -24,7 +20,7 @@ module EX_stage (
     input  wire [4:0]  RdD_in,
     input  wire [3:0]  ALUControlD_in,
     input  wire        ALUSrcD_in,
-    input  wire [1:0]  ALUSrcA_in,     // NEW
+    input  wire [1:0]  ALUSrcA_in,
     input  wire        RegWriteD_in,
     input  wire [1:0]  ResultSrcD_in,
     input  wire        MemWriteD_in,
@@ -43,7 +39,7 @@ module EX_stage (
     output reg  [4:0]  RdD_out,
     output reg  [3:0]  ALUControlD_out,
     output reg         ALUSrcD_out,
-    output reg  [1:0]  ALUSrcA_out,    // NEW
+    output reg  [1:0]  ALUSrcA_out,
     output reg         RegWriteD_out,
     output reg  [1:0]  ResultSrcD_out,
     output reg         MemWriteD_out,
@@ -52,6 +48,7 @@ module EX_stage (
     output reg         JumpR_out,
     output reg  [1:0]  ALUType_out
 );
+
     always @(posedge clk) begin
         if (reset || flushE) begin
             RD1E_out        <= 32'd0;
@@ -93,7 +90,9 @@ module EX_stage (
             ALUType_out     <= ALUType_in;
         end
     end
+
 endmodule
+
 
 
 
