@@ -1,85 +1,13 @@
 `default_nettype none
-`timescale 1ns/1ps
+`timescale 1ns / 1ps
 
 // ============================================================
 //  pipeline — RISC-V 5-stage + shared UART + SPI2 + GPIO
-//  Target: Tiny Tapeout, sky130 PDK, OpenLane, 50 MHz
-// ============================================================
-//
-//  CHANGE LOG vs previous version (two real fixes):
-//
-//  FIX 1 — IMEM_ADDR_W: 6 → 5
-//    DEPTH=32 requires exactly 5 address bits (2^5 = 32).
-//    Previous value of 6 made word_idx = PCF[7:2] a 6-bit
-//    signal that could legally address indices 32..63, which
-//    are out-of-bounds for a 32-deep array — undefined in
-//    synthesis. Changed to 5 so word_idx = PCF[6:2], which
-//    spans exactly 0..31. Consistent with uart_bootloader
-//    addr_count [4:0] (5-bit, max value 31).
-//
-//  FIX 2 — halt_latch: posedge reset_sync → posedge reset
-//    halt_latch body references stall_Pro, which is driven by
-//    uart_bootloader (raw reset domain). Using reset_sync on
-//    the async-reset pin while stall_Pro (raw domain) appeared
-//    in the clocked body created a real CDC inconsistency:
-//    two different reset domains controlling the same FF.
-//    Changed to raw reset so halt_latch, stall_Pro, and
-//    boot_done_r are all in the same reset domain.
-//    SYNCASYNCNET lint suppression is no longer needed.
-//
-//  ──────────────────────────────────────────────────────────
-//  RESET ARCHITECTURE (intentional two-domain design):
-//
-//  Domain A — raw reset (async assert/deassert):
-//    reset_ff1, reset_ff2, boot_done_r, boot_done_r2,
-//    uart_bootloader, gpio2_io, halt_latch.
-//    WHY: uart_bootloader drives stall_Pro on the first
-//    posedge after reset. stall_Pro must be 1 before any
-//    pipeline stage can execute. Using raw reset guarantees
-//    this with zero latency.
-//
-//  Domain B — reset_sync (async assert, sync deassert):
-//    pc_register, uart_Tx_fixed, IF_ID_stage, EX_stage,
-//    MEM_stage, WriteBack_stage, DataMem, spi_master.
-//    WHY: These modules are held frozen by stall_Pro for the
-//    entire boot duration (thousands of cycles). The 2-cycle
-//    sync deassert happens while they are stalled — they
-//    cannot produce wrong outputs during that window.
-//    Benefit: cuts reset net fanout from O(N_modules) to 2.
-//
-//  The domains are safe together because stall_Pro (Domain A)
-//  is always 1 when Domain B modules come out of reset. There
-//  is no race: stall is asserted before Domain B deasserts.
-//
-//  ──────────────────────────────────────────────────────────
-//  WHY FF MEMORY IS CORRECT FOR THIS TARGET:
-//    sky130 Tiny Tapeout does not include an SRAM macro
-//    compiler in the default OpenLane flow. OpenRAM requires
-//    a separate setup not standard for TT submissions.
-//    DEPTH=32 × 32 bits = 1024 flip-flops ≈ 6000 μm² in
-//    sky130 — acceptable area for a TT tile. FF memory also
-//    gives a clean combinational read timing model that
-//    matches the pipeline's async-read assumption exactly.
-//
-//  ──────────────────────────────────────────────────────────
-//  WHY FORWARDING STAYS COMBINATIONAL:
-//    Registering ForwardAE/BE breaks functional correctness:
-//    the select arrives one cycle after the forwarded data,
-//    causing the ALU to read the wrong operand. The hazard
-//    unit must produce forwarding selects combinationally in
-//    the same cycle they are needed. Physical fanout on these
-//    signals is handled by SDC set_max_fanout 6.
-//
-//  ──────────────────────────────────────────────────────────
-//  PHYSICAL FIXES (config.json + SDC — not RTL):
-//    139 clock-leaf fanout violations: CTS_SINK_CLUSTERING_SIZE=6
-//    8 antenna violations on aluAddress_in: DIODE_INSERTION_STRATEGY=3
-//    set_max_fanout 6 [current_design] in pipeline.sdc
 // ============================================================
 
 module pipeline (
     input  wire clk,
-    input  wire reset,      // active-high async reset
+    input  wire reset,      // active-high async reset (raw reset for Domain A/boot blocks)
     input  wire rx,
     output wire tx,
     output wire spi2_sclk,
@@ -88,19 +16,19 @@ module pipeline (
     output wire spi2_cs_n
 );
 
-    // FIX 1: 5 bits = exactly 2^5 = 32 = DEPTH
-    // word_idx = PCF[6:2] → 5-bit → addresses 0..31 only
+    // IMEM: DEPTH=64 => word index needs 6 bits
+    // word_idx = PCF[7:2] (since instructions are 4-byte aligned)
     localparam IMEM_ADDR_W = 6;
 
     // =========================================================
     // RESET SYNCHRONISER — Domain B (data-path modules only)
     // =========================================================
-    // Async-assert, sync-deassert. Raw `reset` feeds only:
-    // reset_ff1/ff2, boot_done_r/r2, uart_bootloader,
-    // gpio2_io, halt_latch.
-    // All data-path submodules receive reset_sync.
+    // IMPORTANT:
+    // Make this generator fully synchronous (no "or posedge reset"),
+    // and also ensure all pipeline.v flops use RESET synchronously.
+    // That avoids Verilator SYNCASYNCNET on pipeline.v's "reset".
     reg reset_ff1, reset_ff2;
-    always @(posedge clk or posedge reset) begin
+    always @(posedge clk) begin
         if (reset) begin
             reset_ff1 <= 1'b1;
             reset_ff2 <= 1'b1;
@@ -148,58 +76,50 @@ module pipeline (
     wire [7:0]  periph_tx_data;
     wire        periph_tx_start;
 
-    /* verilator lint_off UNUSEDSIGNAL */
-    wire [7:0]  mem_addr;
-    /* verilator lint_on  UNUSEDSIGNAL */
-
+    wire [IMEM_ADDR_W-1:0]  mem_addr; // bootloader writes IMEM using this bus (6-bit word addr)
     wire [31:0] mem_wdata;
     wire        Write_enable;
     wire        stall_Pro;
     wire        halt_top;
 
-    // ── boot_done_r — Domain A (raw reset) ────────────────────
-    // stall_Pro = ~boot_done is a wire from uart_bootloader.
-    // Must use raw reset: stall_Pro must be 1 at the first
-    // posedge after reset so the pipeline cannot execute
-    // garbage instructions.
+    // =========================================================
+    // boot_done_r — Domain A
+    // =========================================================
+    // IMPORTANT:
+    // This file must treat reset synchronously everywhere (no async reset in pipeline.v),
+    // to eliminate Verilator SYNCASYNCNET.
     wire boot_done_comb = ~stall_Pro;
     reg  boot_done_r;
-    always @(posedge clk or posedge reset) begin
+    always @(posedge clk) begin
         if (reset) boot_done_r <= 1'b0;
         else       boot_done_r <= boot_done_comb;
     end
 
-    // ── boot_done_r2 — TX/RX arbiter gate (raw reset) ─────────
-    // Second register stage prevents TX MUX switching mid-pulse
-    // at the boot→run transition. stall_Pro still uses the
-    // single-stage boot_done_r. One-cycle arbiter delay is safe:
-    // bootloader FSM ignores rx_valid after boot_done is set.
+    // =========================================================
+    // boot_done_r2 — TX/RX arbiter gate (Domain A)
+    // =========================================================
     reg boot_done_r2;
-    always @(posedge clk or posedge reset) begin
+    always @(posedge clk) begin
         if (reset) boot_done_r2 <= 1'b0;
         else       boot_done_r2 <= boot_done_r;
     end
 
     // ── TX arbiter ────────────────────────────────────────────
     wire boot_tx_start_gated = boot_tx_start_raw & ~boot_done_r2;
-    wire [7:0] shared_tx_data  = boot_done_r2 ? periph_tx_data   : boot_tx_data;
+    wire [7:0] shared_tx_data  = boot_done_r2 ? periph_tx_data : boot_tx_data;
     wire       shared_tx_start = boot_done_r2
-                                     ? (periph_tx_start & ~uart_tx_busy_shared)
-                                     : boot_tx_start_gated;
+                                 ? (periph_tx_start & ~uart_tx_busy_shared)
+                                 : boot_tx_start_gated;
 
     // ── RX routing ────────────────────────────────────────────
     wire uart_rx_ready_boot = uart_rx_ready_shared & ~boot_done_r2;
 
-    // ── Halt logic — Domain A (raw reset, FIX 2) ──────────────
-    // FIX 2: Changed from posedge reset_sync to posedge reset.
-    // stall_Pro is in Domain A (raw reset). Having halt_latch
-    // on reset_sync while its body references stall_Pro (Domain A)
-    // created a CDC inconsistency. Now all three — halt_latch,
-    // stall_Pro, boot_done_r — are in the same raw-reset domain.
-    // The SYNCASYNCNET lint suppression is no longer needed.
+    // =========================================================
+    // Halt logic — Domain A
+    // =========================================================
     wire halt_active = halt_top & ~stall_Pro & ~FlushD_top & ~FlushE_top;
     reg  halt_latch;
-    always @(posedge clk or posedge reset) begin
+    always @(posedge clk) begin
         if (reset)            halt_latch <= 1'b0;
         else if (stall_Pro)   halt_latch <= 1'b0;
         else if (halt_active) halt_latch <= 1'b1;
@@ -219,7 +139,7 @@ module pipeline (
         .PCScr(PCSCR_top), .PCSequential(PCPLUS4_top),
         .PCBranch(PCTarget_top), .Mux3_PC(PC_top));
 
-    // Domain B: data-path, safe with reset_sync
+    // Domain B: data-path register
     pc_register Register_top (
         .clk(clk), .reset(reset_sync),
         .PCF_in(PC_top), .stallF(StallF_net), .PCF_out(PCF));
@@ -237,11 +157,8 @@ module pipeline (
         .rx_ready(uart_rx_ready_shared));
 
     // =========================================================
-    // BOOTLOADER — Domain A (raw reset, timing-critical)
+    // BOOTLOADER — Domain A (raw reset)
     // =========================================================
-    // Must use raw reset: drives stall_Pro which gates the
-    // entire pipeline. stall_Pro must assert before the first
-    // posedge the pipeline could otherwise execute.
     uart_bootloader uart_bootloader (
         .clk(clk), .reset(reset),
         .rx_data(uart_rx_data_shared),
@@ -253,20 +170,22 @@ module pipeline (
         .mem_wdata(mem_wdata),
         .stall_pro(stall_Pro));
 
-    // IMEM — DEPTH=32, ADDR_W=5 (FIX 1)
-    // word_idx = PCF[6:2] → 5-bit → valid range 0..31
-    // Matches uart_bootloader addr_count [4:0] max=31 exactly.
-    // FF-based memory is correct for sky130 Tiny Tapeout:
-    // no SRAM macro compiler in default OpenLane TT flow.
-    mem1KB_32bit #(
+    // =========================================================
+    // IMEM — DEPTH=64, addr word index 6-bit
+    // PC_word_idx = PCF[7:2]
+    // =========================================================
+    wire [IMEM_ADDR_W-1:0] PC_word_idx;
+    assign PC_word_idx = PCF[IMEM_ADDR_W+1:2];
+
+    instruction_mem #(
         .DEPTH(64), .ADDR_W(IMEM_ADDR_W)
-    ) flipflop (
+    ) imem_inst (
         .clk(clk),
         .reset(reset_sync),
         .we(Write_enable),
-        .addr(mem_addr[IMEM_ADDR_W-1:0]),
+        .addr(mem_addr),
         .wdata(mem_wdata),
-        .read_Address(PCF),
+        .read_word_idx(PC_word_idx),
         .Instruction_out(Instruction1_out));
 
     // =========================================================
@@ -280,7 +199,7 @@ module pipeline (
         .instruction_out(INSTRUCTION),
         .PCplus4_out(PCPLUS4D_TOP), .PC_out(PCD_top));
 
-    // Instruction field slices — reduce per-consumer fanout
+    // Instruction field slices
     wire [6:0]  INSTR_op   = INSTRUCTION[6:0];
     wire [2:0]  INSTR_f3   = INSTRUCTION[14:12];
     wire [6:0]  INSTR_f7   = INSTRUCTION[31:25];
@@ -335,11 +254,6 @@ module pipeline (
         .JumpD_out(JumpE_top), .JumpR_out(JumpRE_top),
         .ALUType_out(ALUTypE_top));
 
-    // ── Forwarding MUXes — combinational (must not register) ──
-    // ForwardAE/BE must be produced combinationally. If registered,
-    // the select is 1 cycle late relative to the forwarded data,
-    // causing the ALU to read the wrong operand. Physical fanout
-    // is handled by SDC set_max_fanout 6.
     wire [31:0] SrcA_fwd =
         (ForwardAE_top == 2'b10) ? ALUResultM_top :
         (ForwardAE_top == 2'b01) ? ResultW_top    :
@@ -422,9 +336,6 @@ module pipeline (
     wire        gpio2_wr_en_w, gpio2_wdata_w;
 
     // DataMem — Domain B
-    // aluAddress_in stays combinational (ALUResultM_top directly).
-    // Registering it would de-sync the address from MemWriteM_top,
-    // causing writes to wrong peripheral addresses.
     DataMem #(
         .UART_FIFO_DEPTH (4),
         .SPI_RX_DEPTH    (4)
@@ -451,24 +362,27 @@ module pipeline (
     spi_master #(
         .DATA_WIDTH(8), .CPOL(0), .CPHA(0), .CLK_DIV(8)
     ) spi2_inst (
-        .clk(clk), .reset(reset_sync),
-        .start(spi2_start_w), .tx_data(spi2_tx_data_w),
-        .rx_data(spi2_rx_data_w), .busy(spi2_busy_w),
-        .done(spi2_done_w), .sclk(spi2_sclk),
-        .mosi(spi2_mosi), .miso(spi2_miso));
+        .clk(clk),
+        .reset(reset_sync),
+        .start(spi2_start_w),
+        .tx_data(spi2_tx_data_w),
+        .rx_data(spi2_rx_data_w),
+        .busy(spi2_busy_w),
+        .done(spi2_done_w),
+        .sclk(spi2_sclk),
+        .mosi(spi2_mosi),
+        .miso(spi2_miso));
 
-    // gpio2_io — Domain A (raw reset)
-    // On reset: gpio_out_reg = 1 (CS_N idle-high). DataMem
-    // (Domain B) cannot drive gpio2_wr_en=1 until reset_sync
-    // deasserts, which is 2 cycles AFTER gpio2 is already
-    // stable at CS_N=1. No glitch possible.
+    // gpio2_io — Domain B
     gpio2_io gpio2 (
-        .clk(clk), .reset(reset),
+        .clk(clk), .reset(reset_sync),
         .wr_en2(gpio2_wr_en_w), .wdata2(gpio2_wdata_w),
         .spi_busy(spi2_busy_w), .spi_pending(spi2_pending_w),
         .gpio_out2(spi2_cs_n));
 
 endmodule
+
+
 
 
 

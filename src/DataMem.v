@@ -1,24 +1,21 @@
 `default_nettype none
-`timescale 1ns / 1ps
+`timescale 1ns/1ps
 
-// ============================================================
-//  DataMem — Memory-mapped peripheral bus (TX-only UART)
-// ============================================================
 module DataMem #(
     parameter integer UART_FIFO_DEPTH = 4,
     parameter integer SPI_RX_DEPTH    = 4
 )(
     input  wire        clk,
-    input  wire        reset,      // active-high ASYNC reset
+    input  wire        reset,
     input  wire [31:0] aluAddress_in,
-    input  wire [7:0]  DataWriteM_in,
+    input  wire [7:0]  DataWriteM_in,   // CHANGED: now 8-bit (matches pipeline usage)
     input  wire        memwriteM_in,
     output reg  [31:0] DataMem_out,
 
     // ── UART TX only ──────────────────────────────────────────
     output reg  [7:0]  uart_out_data,
     output reg         uart_tx_start,
-    input  wire        uart_tx_busy,    // wire from uart_Tx_fixed
+    input  wire        uart_tx_busy,
 
     // ── SPI2 ──────────────────────────────────────────────────
     output reg  [7:0]  spi2_tx_data,
@@ -33,7 +30,7 @@ module DataMem #(
     output reg         gpio2_wdata
 );
 
-    // ── Address decode — combinational, do NOT register ───────
+    // ── Address decode ────────────────────────────────────────
     wire sel_uart_tx   = (aluAddress_in == 32'h1000_0000);
     wire sel_uart_txst = (aluAddress_in == 32'h1000_0008);
     wire sel_spi2_tx   = (aluAddress_in == 32'h4000_0000);
@@ -48,25 +45,21 @@ module DataMem #(
     wire       uart_tx_full, uart_tx_empty;
     wire [7:0] uart_tx_rd_data;
 
-    // Write-lock: prevents double-write from pipeline stalls
-    // (memwriteM_in stays high while pipeline is stalled on lw/sw)
     reg uart_tx_wr_lock;
     always @(posedge clk) begin
-        if (reset)                                                  uart_tx_wr_lock <= 1'b0;
-        else if (!sel_uart_tx)                                      uart_tx_wr_lock <= 1'b0;
-        else if (memwriteM_in && sel_uart_tx && !uart_tx_wr_lock)   uart_tx_wr_lock <= 1'b1;
+        if (reset)
+            uart_tx_wr_lock <= 1'b0;
+        else if (!sel_uart_tx)
+            uart_tx_wr_lock <= 1'b0;
+        else if (memwriteM_in && sel_uart_tx && !uart_tx_wr_lock)
+            uart_tx_wr_lock <= 1'b1;
     end
+
     wire uart_tx_wr = memwriteM_in && sel_uart_tx
                       && !uart_tx_wr_lock && !uart_tx_full;
 
-    // Drain trigger:
-    //   Level = UART idle AND FIFO has data AND tx not just started.
-    //   !uart_tx_start: prevents re-trigger the cycle after a drain.
-    //     uart_tx_start is registered (1 cycle high after drain).
-    //     Without this guard: level can briefly re-rise the same
-    //     cycle uart_tx_start asserts before tx_busy rises.
-    //   Pulse = rising edge of level → exactly 1-cycle pop.
-    wire uart_tx_rd_level = !uart_tx_busy && !uart_tx_empty && !uart_tx_start;
+    wire uart_tx_rd_level = !uart_tx_busy && !uart_tx_empty
+                             && !uart_tx_start;
     reg  uart_tx_rd_prev;
     always @(posedge clk) begin
         if (reset) uart_tx_rd_prev <= 1'b0;
@@ -78,17 +71,16 @@ module DataMem #(
         .DATA_WIDTH (8),
         .DEPTH      (UART_FIFO_DEPTH)
     ) UART_TX_FIFO (
-        .clk     (clk),          .reset   (reset),
-        .wr_en   (uart_tx_wr),   .wr_data (DataWriteM_in),
-        .rd_en   (uart_tx_rd),   .rd_data (uart_tx_rd_data),
-        .full    (uart_tx_full), .empty   (uart_tx_empty)
+        .clk     (clk),
+        .reset   (reset),
+        .wr_en   (uart_tx_wr),
+        .wr_data (DataWriteM_in),  // CHANGED
+        .rd_en   (uart_tx_rd),
+        .rd_data (uart_tx_rd_data),
+        .full    (uart_tx_full),
+        .empty   (uart_tx_empty)
     );
 
-    // Capture byte and fire TX — registered together so they
-    // reach uart_Tx_fixed on the same clock edge.
-    // rd_data is combinational (async FIFO read) — valid at
-    // posedge when uart_tx_rd is sampled. Non-blocking assignment
-    // captures the pre-posedge value correctly.
     always @(posedge clk) begin
         if (reset) begin
             uart_out_data <= 8'd0;
@@ -110,10 +102,14 @@ module DataMem #(
     reg        spi2_tx_wr_lock;
 
     always @(posedge clk) begin
-        if (reset)                                                    spi2_tx_wr_lock <= 1'b0;
-        else if (!sel_spi2_tx)                                        spi2_tx_wr_lock <= 1'b0;
-        else if (memwriteM_in && sel_spi2_tx && !spi2_tx_wr_lock)     spi2_tx_wr_lock <= 1'b1;
+        if (reset)
+            spi2_tx_wr_lock <= 1'b0;
+        else if (!sel_spi2_tx)
+            spi2_tx_wr_lock <= 1'b0;
+        else if (memwriteM_in && sel_spi2_tx && !spi2_tx_wr_lock)
+            spi2_tx_wr_lock <= 1'b1;
     end
+
     wire spi2_tx_wr = memwriteM_in && sel_spi2_tx && !spi2_tx_wr_lock;
     assign spi2_pending_out = spi2_pending;
 
@@ -125,11 +121,12 @@ module DataMem #(
             spi2_tx_buf  <= 8'd0;
         end else begin
             spi2_start <= 1'b0;
+
             if (spi2_tx_wr && !spi2_pending) begin
-                spi2_tx_buf  <= DataWriteM_in;
+                spi2_tx_buf  <= DataWriteM_in; // CHANGED
                 spi2_pending <= 1'b1;
             end
-            // Fire when SPI master is idle and not in done pulse
+
             if (spi2_pending && !spi2_busy && !spi2_done) begin
                 spi2_tx_data <= spi2_tx_buf;
                 spi2_start   <= 1'b1;
@@ -153,10 +150,14 @@ module DataMem #(
     reg        spi2_rx_rd_lock;
 
     always @(posedge clk) begin
-        if (reset)                                                    spi2_rx_rd_lock <= 1'b0;
-        else if (!sel_spi2_rx)                                        spi2_rx_rd_lock <= 1'b0;
-        else if (!memwriteM_in && sel_spi2_rx && !spi2_rx_rd_lock)    spi2_rx_rd_lock <= 1'b1;
+        if (reset)
+            spi2_rx_rd_lock <= 1'b0;
+        else if (!sel_spi2_rx)
+            spi2_rx_rd_lock <= 1'b0;
+        else if (!memwriteM_in && sel_spi2_rx && !spi2_rx_rd_lock)
+            spi2_rx_rd_lock <= 1'b1;
     end
+
     wire spi2_rx_rd = !memwriteM_in && sel_spi2_rx
                       && !spi2_rx_rd_lock && !spi2_rx_empty;
 
@@ -164,10 +165,14 @@ module DataMem #(
         .DATA_WIDTH (8),
         .DEPTH      (SPI_RX_DEPTH)
     ) SPI2_RX_FIFO (
-        .clk     (clk),              .reset   (reset),
-        .wr_en   (spi2_done_rise),   .wr_data (spi2_rx_data),
-        .rd_en   (spi2_rx_rd),       .rd_data (spi2_rx_rd_data),
-        .full    (spi2_rx_full),     .empty   (spi2_rx_empty)
+        .clk     (clk),
+        .reset   (reset),
+        .wr_en   (spi2_done_rise),
+        .wr_data (spi2_rx_data),
+        .rd_en   (spi2_rx_rd),
+        .rd_data (spi2_rx_rd_data),
+        .full    (spi2_rx_full),
+        .empty   (spi2_rx_empty)
     );
 
     // =========================================================
@@ -176,7 +181,7 @@ module DataMem #(
     always @(posedge clk) begin
         if (reset) begin
             gpio2_wr_en <= 1'b0;
-            gpio2_wdata <= 1'b1;    // CS_N idle high
+            gpio2_wdata <= 1'b1; // CS_N idle high
         end else begin
             gpio2_wr_en <= 1'b0;
             if (memwriteM_in && sel_gpio2) begin
@@ -188,15 +193,13 @@ module DataMem #(
 
     // =========================================================
     // READ MUX — combinational
-    // sel_uart_tx absent (write-only) — prevents X propagation.
-    // 0xDEADBADD surfaces unmapped reads in simulation.
     // =========================================================
     always @(*) begin
         DataMem_out = 32'hDEAD_BADD;
         if (!memwriteM_in) begin
             if      (sel_uart_txst) DataMem_out = {30'd0, uart_tx_busy, uart_tx_full};
             else if (sel_spi2_tx)   DataMem_out = {24'd0, spi2_tx_buf};
-            else if (sel_spi2_txst) DataMem_out = {30'd0, spi2_pending,  spi2_busy};
+            else if (sel_spi2_txst) DataMem_out = {30'd0, spi2_pending, spi2_busy};
             else if (sel_spi2_rx)   DataMem_out = {24'd0, spi2_rx_rd_data};
             else if (sel_spi2_rxst) DataMem_out = {30'd0, spi2_rx_full, ~spi2_rx_empty};
             else if (sel_gpio2)     DataMem_out = {31'd0, gpio2_wdata};
@@ -204,6 +207,8 @@ module DataMem #(
     end
 
 endmodule
+
+
 
 
 

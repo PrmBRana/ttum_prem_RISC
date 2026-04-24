@@ -35,7 +35,6 @@ module Control (
         ALUType     = 2'b00;
         halt        = 1'b0;
 
-        // ---------------- DECODE ----------------
         case (Opcode)
 
             // ================= R TYPE =================
@@ -45,16 +44,16 @@ module Control (
                 ALUType   = 2'b00;
 
                 case ({funct7, funct3})
-                    {7'b0000000,3'b000}: ALUControlD = 4'b0010;
-                    {7'b0100000,3'b000}: ALUControlD = 4'b0011;
-                    {7'b0000000,3'b110}: ALUControlD = 4'b0001;
-                    {7'b0000000,3'b111}: ALUControlD = 4'b0000;
-                    {7'b0000000,3'b100}: ALUControlD = 4'b0100;
-                    {7'b0000000,3'b001}: ALUControlD = 4'b0101;
-                    {7'b0000000,3'b101}: ALUControlD = 4'b0110;
-                    {7'b0100000,3'b101}: ALUControlD = 4'b0111;
-                    {7'b0000000,3'b010}: ALUControlD = 4'b1000;
-                    {7'b0000000,3'b011}: ALUControlD = 4'b1001;
+                    {7'b0000000,3'b000}: ALUControlD = 4'b0010; // ADD
+                    {7'b0100000,3'b000}: ALUControlD = 4'b0011; // SUB
+                    {7'b0000000,3'b110}: ALUControlD = 4'b0001; // OR
+                    {7'b0000000,3'b111}: ALUControlD = 4'b0000; // AND
+                    {7'b0000000,3'b100}: ALUControlD = 4'b0100; // XOR
+                    {7'b0000000,3'b001}: ALUControlD = 4'b0101; // SLL
+                    {7'b0000000,3'b101}: ALUControlD = 4'b0110; // SRL
+                    {7'b0100000,3'b101}: ALUControlD = 4'b0111; // SRA
+                    {7'b0000000,3'b010}: ALUControlD = 4'b1000; // SLT
+                    {7'b0000000,3'b011}: ALUControlD = 4'b1001; // SLTU
                     default:             ALUControlD = 4'b0000;
                 endcase
             end
@@ -67,14 +66,16 @@ module Control (
                 ALUType   = 2'b00;
 
                 case (funct3)
-                    3'b000: ALUControlD = 4'b0010;
-                    3'b100: ALUControlD = 4'b0100;
-                    3'b110: ALUControlD = 4'b0001;
-                    3'b111: ALUControlD = 4'b0000;
-                    3'b001: ALUControlD = 4'b0101;
-                    3'b101: ALUControlD = (funct7 == 7'b0100000) ? 4'b0111 : 4'b0110;
-                    3'b010: ALUControlD = 4'b1000;
-                    3'b011: ALUControlD = 4'b1001;
+                    3'b000: ALUControlD = 4'b0010; // ADDI
+                    3'b100: ALUControlD = 4'b0100; // XORI
+                    3'b110: ALUControlD = 4'b0001; // ORI
+                    3'b111: ALUControlD = 4'b0000; // ANDI
+                    3'b001: ALUControlD = 4'b0101; // SLLI
+                    3'b101: ALUControlD = (funct7 == 7'b0100000)
+                                         ? 4'b0111  // SRAI
+                                         : 4'b0110; // SRLI
+                    3'b010: ALUControlD = 4'b1000;  // SLTI
+                    3'b011: ALUControlD = 4'b1001;  // SLTIU
                     default: ALUControlD = 4'b0000;
                 endcase
             end
@@ -85,7 +86,7 @@ module Control (
                 ResultSrcD  = 2'b01;
                 ALUSrcD     = 1'b1;
                 ImmSrc      = 3'b000;
-                ALUControlD = 4'b0010;
+                ALUControlD = 4'b0010; // ADD (base + offset)
                 ALUType     = 2'b00;
             end
 
@@ -94,8 +95,8 @@ module Control (
                 MemWriteD   = 1'b1;
                 ALUSrcD     = 1'b1;
                 ImmSrc      = 3'b001;
-                ALUControlD = 4'b0010;
-                ALUType     = 2'b01;
+                ALUControlD = 4'b0010; // ADD (base + offset)
+                ALUType     = 2'b01;   // forced ADD path
             end
 
             // ================= BRANCH =================
@@ -103,15 +104,15 @@ module Control (
                 BranchD = 1'b1;
                 ALUSrcD = 1'b0;
                 ImmSrc  = 3'b010;
-                ALUType = 2'b10;
+                ALUType = 2'b10;       // branch compare path
 
                 case (funct3)
-                    3'b000: ALUControlD = 4'b0000;
-                    3'b001: ALUControlD = 4'b0001;
-                    3'b100: ALUControlD = 4'b0010;
-                    3'b101: ALUControlD = 4'b0011;
-                    3'b110: ALUControlD = 4'b0100;
-                    3'b111: ALUControlD = 4'b0101;
+                    3'b000: ALUControlD = 4'b0000; // BEQ
+                    3'b001: ALUControlD = 4'b0001; // BNE
+                    3'b100: ALUControlD = 4'b0010; // BLT
+                    3'b101: ALUControlD = 4'b0011; // BGE
+                    3'b110: ALUControlD = 4'b0100; // BLTU
+                    3'b111: ALUControlD = 4'b0101; // BGEU
                     default: ALUControlD = 4'b0000;
                 endcase
             end
@@ -119,33 +120,35 @@ module Control (
             // ================= JAL =================
             7'b1101111: begin
                 RegWriteD   = 1'b1;
-                ResultSrcD  = 2'b10;
+                ResultSrcD  = 2'b10;   // write PC+4 to rd
                 jumpD       = 1'b1;
                 ImmSrc      = 3'b011;
                 ALUSrcD     = 1'b1;
-                ALUControlD = 4'b0010;
-                ALUType     = 2'b11;
+                ALUSrcA     = 2'b01;   // FIX: SrcA = PC (not Rs1)
+                ALUControlD = 4'b0010; // ADD: PC + imm
+                ALUType     = 2'b11;   // forced ADD path
             end
 
             // ================= JALR =================
             7'b1100111: begin
                 RegWriteD   = 1'b1;
-                ResultSrcD  = 2'b10;
+                ResultSrcD  = 2'b10;   // write PC+4 to rd
                 jumpD       = 1'b1;
                 jumpR       = 1'b1;
                 ALUSrcD     = 1'b1;
+                ALUSrcA     = 2'b00;   // SrcA = Rs1 (base register)
                 ImmSrc      = 3'b000;
-                ALUControlD = 4'b0010;
-                ALUType     = 2'b11;
+                ALUControlD = 4'b0010; // ADD: Rs1 + imm
+                ALUType     = 2'b11;   // forced ADD path
             end
 
             // ================= LUI =================
             7'b0110111: begin
                 RegWriteD   = 1'b1;
                 ALUSrcD     = 1'b1;
-                ALUSrcA     = 2'b10;
+                ALUSrcA     = 2'b10;   // SrcA = 0 (zero + imm = imm)
                 ImmSrc      = 3'b100;
-                ALUControlD = 4'b1010;
+                ALUControlD = 4'b1010; // passB
                 ALUType     = 2'b00;
             end
 
@@ -153,13 +156,13 @@ module Control (
             7'b0010111: begin
                 RegWriteD   = 1'b1;
                 ALUSrcD     = 1'b1;
-                ALUSrcA     = 2'b01;
+                ALUSrcA     = 2'b01;   // SrcA = PC
                 ImmSrc      = 3'b100;
-                ALUControlD = 4'b0010;
+                ALUControlD = 4'b0010; // ADD: PC + imm
                 ALUType     = 2'b00;
             end
 
-            // ================= SYSTEM =================
+            // ================= SYSTEM (ECALL/EBREAK) =================
             7'b1110011: begin
                 if (funct3 == 3'b000)
                     halt = (imm == 12'h000 || imm == 12'h001);
@@ -170,7 +173,3 @@ module Control (
     end
 
 endmodule
-
-
-
-
