@@ -336,10 +336,7 @@ module pipeline (
     wire        gpio2_wr_en_w, gpio2_wdata_w;
 
     // DataMem — Domain B
-    DataMem #(
-        .UART_FIFO_DEPTH (4),
-        .SPI_RX_DEPTH    (4)
-    ) databus_inst (
+    DataMem  databus_inst (
         .clk             (clk),
         .reset           (reset_sync),
         .aluAddress_in   (ALUResultM_top),
